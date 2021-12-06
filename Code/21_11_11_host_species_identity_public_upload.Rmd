@@ -1,0 +1,847 @@
+---
+title: "Host species identity"
+author: "Kyle Padoock"
+date: "7/14/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+source('210304_microbe_functions.R')
+```
+
+The first question we asked was "What effect does host species identity have on microbiome composition?". This code aims to address that question.
+
+```{r}
+#setwd(your directory here)
+bd <- read_csv2phyloseq(
+  #ASV file with counts of reads per ASV by samples
+  otu.file = , 
+  #Accompanying taxonomy for ASV sequences
+  taxonomy.file = ,
+  #Metadata table for samples in data set
+  metadata.file = 
+)
+
+# Now that it's in a useable format, we can filter out the chloroplast, mitochondria, archaea and unclassified phyla. This was done before the final tables were uploaded but always good to double check
+bd2 <- nonbact_filter(bd)
+
+```
+
+## Wolbachia included data
+
+Wolbachia is in high abundance in WCR and can occur in NCR but not in these populations. That means the largest difference in microbiome composition will be driven by Wolbachia. Let's first confirm that before we remove Wolbachia. For this, we will rarefy to 3000 reads.
+
+```{r, results=hide, fig.align='center'}
+total_sample_set <- rarefy_even_depth(bd2, sample.size = 3000, rngseed = 2)
+
+tss_rare_bray <- phyloseq::distance(total_sample_set, method = "bray")
+tss_rare_jaccard <-  phyloseq::distance(total_sample_set, method = "jaccard")
+sample_tss_rare <- data.frame(sample_data(total_sample_set))
+
+set.seed(2)
+adonis(tss_rare_bray ~ Rootworm, data = sample_tss_rare)
+permutest(betadisper(tss_rare_bray, sample_tss_rare$Rootworm))
+set.seed(2)
+adonis(tss_rare_jaccard ~ Rootworm, data = sample_tss_rare)
+permutest(betadisper(tss_rare_jaccard, sample_tss_rare$Rootworm))
+
+```
+
+Here we find very strong differences in centroid location for jaccard and bray-curtis distances as well as beta-dispersion between groups. 
+
+## Wolbachia excluded data
+Because Wolbachia can sometimes mask effects, let's compare it to samples with wolbachia removed and rarefied to 750 reads.
+
+## Beta diversity
+```{r}
+bdw <- subset_taxa(bd4, (Family != "Anaplasmataceae") | is.na(Family))
+wf2 <- rarefy_even_depth(bdw, sample.size = 750, rngseed = 2) # lost 31 samples
+write.csv(sample_data(bdw), "")
+
+#rarefaction curves
+wf2_otus = as(otu_table(wf2), "matrix")
+wf2_otus <- as.data.frame(wf2_otus)
+
+sample_wf2_rare <- data.frame(sample_data(wf2))
+wf2_otus_meta <- left_join(rownames_to_column(wf2_otus), rownames_to_column(sample_wf2_rare), by = 'rowname')
+
+wf2_rare_inext <- iNEXT(wf2_otus, q=0, datatype = "abundance", endpoint = 1000)
+ggiNEXT(wf2_rare_inext,type = 1) + theme(legend.position = "none")
+
+ggsave("", dpi = 300)
+
+
+### Permanova analysis
+wf2_rare_bray <- phyloseq::distance(wf2, method = "bray")
+wf2_rare_jaccard <- phyloseq::distance(wf2, method = "jaccard")
+sample_wf2_rare <- data.frame(sample_data(wf2))
+
+set.seed(2)
+adonis2(wf2_rare_bray ~ Rootworm, data = sample_wf2_rare)
+permutest(betadisper(wf2_rare_bray, sample_wf2_rare$Rootworm))
+set.seed(2)
+adonis2(wf2_rare_jaccard ~ Rootworm, data = sample_wf2_rare)
+permutest(betadisper(wf2_rare_jaccard, sample_wf2_rare$Rootworm))
+```
+
+Let's generate a figure to look at this data here.
+
+```{r}
+sample_wf2_rare2 <- column_to_rownames(sample_wf2_rare, var = "sample")
+
+pcoa_total <- phyloseq::ordinate(wf2, "PCoA", "bray")
+plot_ordination(wf2, pcoa_total, 
+                type = "samples", color = "Rootworm")
+
+nmds_total <- phyloseq::ordinate(wf2, "NMDS", "bray")
+plot_ordination(wf2, nmds_total, 
+                type = "samples", color = "Rootworm")
+
+set.seed(2)
+beta_total_rare <- betadisper(wf2_rare_bray, sample_wf2_rare$Rootworm)
+
+sample_wf2_rare3 <- tibble::rownames_to_column(sample_wf2_rare, "sample")
+scores_pcoa_total_rare <- as.data.frame(scores(beta_total_rare, display = "sites"))
+scores_pcoa_total_rare2 <- tibble::rownames_to_column(scores_pcoa_total_rare, "sample")
+scores_pcoa_total_rare3 <- inner_join(scores_pcoa_total_rare2, sample_wf2_rare3, by = "sample")
+
+centroids_total_rare <- scores(beta_total_rare, display = "centroids")
+centroids_total_rare2 <- as.data.frame(centroids_total_rare)
+centroids_total_rare3 <- tibble::rownames_to_column(centroids_total_rare2, "Rootworm")
+
+pcoa_data_total_rare <- inner_join(scores_pcoa_total_rare3, centroids_total_rare3, by = "Rootworm")
+
+
+
+total_rare_pcoa_fig1 <- pcoa_data_total_rare %>% 
+  ggplot(aes(x = PCoA1.x, y = PCoA2.x, colour = Rootworm)) +
+  geom_point(data = centroids_total_rare3, aes(x = PCoA1, y = PCoA2), size = 4, alpha = 1) +
+  geom_point(alpha = 0.5) + 
+  geom_segment(aes(x = PCoA1.y, y = PCoA2.y, xend = PCoA1.x, yend = PCoA2.x), alpha = 0.25) +
+  scale_color_manual(values = c("#AD343E", "#1D3354")) + 
+  theme_classic() + 
+  xlab("Axis 1 [24.6%]") + ylab("Axis 2 [13.4%]") + labs(colour = "Host species") +
+  theme(axis.title = element_text(size = 16),
+        axis.text =  element_text(size = 12),
+        axis.title.x = element_text(vjust = -1),
+        axis.title.y = element_text(vjust = 1),
+        plot.margin = unit(c(.75,.75,.75,.75), 'cm'),
+        legend.text = element_text(size = 14),
+        legend.title = element_text(size = 15))
+
+total_rare_pcoa_fig1
+
+ggsave("", dpi = 300, width = 10, height = 7)
+
+
+## Jaccard
+
+pcoa_total_jac <- phyloseq::ordinate(wf2, "PCoA", "jaccard")
+plot_ordination(wf2, pcoa_total_jac, 
+                type = "samples", color = "Rootworm")
+
+
+set.seed(2)
+beta_total_rare_jac <- betadisper(wf2_rare_jaccard, sample_wf2_rare$Rootworm)
+
+sample_wf2_rare3 <- tibble::rownames_to_column(sample_wf2_rare, "sample")
+scores_pcoa_total_rare_jac <- as.data.frame(scores(beta_total_rare_jac, display = "sites"))
+scores_pcoa_total_rare2_jac <- tibble::rownames_to_column(scores_pcoa_total_rare_jac, "sample")
+scores_pcoa_total_rare3_jac <- inner_join(scores_pcoa_total_rare2_jac, sample_wf2_rare3, by = "sample")
+
+centroids_total_rare_jac <- scores(beta_total_rare_jac, display = "centroids")
+centroids_total_rare2_jac <- as.data.frame(centroids_total_rare_jac)
+centroids_total_rare3_jac <- tibble::rownames_to_column(centroids_total_rare2_jac, "Rootworm")
+
+pcoa_data_total_rare_jac <- inner_join(scores_pcoa_total_rare3_jac, centroids_total_rare3_jac, by = "Rootworm")
+
+
+
+total_rare_pcoa_fig2 <- pcoa_data_total_rare_jac %>% 
+  ggplot(aes(x = PCoA1.x, y = PCoA2.x, colour = Rootworm)) +
+  geom_point(data = centroids_total_rare3_jac, aes(x = PCoA1, y = PCoA2), size = 4, alpha = 1) +
+  geom_point(alpha = 0.5) + 
+  geom_segment(aes(x = PCoA1.y, y = PCoA2.y, xend = PCoA1.x, yend = PCoA2.x), alpha = 0.25) +
+  scale_color_manual(values = c("#AD343E", "#1D3354")) + 
+  theme_classic() + 
+  xlab("Axis 1 [22.4%]") + ylab("Axis 2 [11.5%]") + labs(colour = "Host species") +
+  theme(axis.title = element_text(size = 16),
+        axis.text =  element_text(size = 12),
+        axis.title.x = element_text(vjust = -1),
+        axis.title.y = element_text(vjust = 1),
+        plot.margin = unit(c(.75,.75,.75,.75), 'cm'),
+        legend.text = element_text(size = 14),
+        legend.title = element_text(size = 15))
+
+total_rare_pcoa_fig2
+
+ggsave("", dpi = 300)
+
+```
+
+For visualization purposes, let's see log-transformed data. In statistical terms, this doubles the F-value but the p-value is still less than 0.001. 
+
+```{r}
+bdw2_log <- transform_sample_counts(bdw, function(x) log(1+x))
+bdw2_log_bray <- phyloseq::distance(bdw2_log, method = "bray")
+sample_wf2_log <- data.frame(sample_data(bdw))
+
+
+sample_wf2_log3 <- column_to_rownames(sample_wf2_log, var = "sample")
+
+pcoa_totallog <- phyloseq::ordinate(bdw2_log, "PCoA", "bray")
+plot_ordination(bdw2_log, pcoa_totallog, 
+                type = "samples", color = "Rootworm")
+
+beta_total_log <- betadisper(bdw2_log_bray, sample_wf2_log$Rootworm)
+
+
+# PCoA of log transformed data from manuscript
+
+# extract scores and join with sample_data
+sample_wf2_log3 <- tibble::rownames_to_column(sample_wf2_log, "sample")
+scores_pcoa_total_log <- as.data.frame(scores(beta_total_log, display = "sites"))
+scores_pcoa_total_log2 <- tibble::rownames_to_column(scores_pcoa_total_log, "sample")
+scores_pcoa_total_log3 <- inner_join(scores_pcoa_total_log2, sample_wf2_log3, by = "sample")
+
+centroids_total_log <- scores(beta_total_log, display = "centroids")
+centroids_total_log2 <- as.data.frame(centroids_total_log)
+centroids_total_log3 <- tibble::rownames_to_column(centroids_total_log2, "Rootworm")
+
+pcoa_data_total_log <- inner_join(scores_pcoa_total_log3, centroids_total_log3, by = "Rootworm")
+
+total_log_pcoa_fig1 <- pcoa_data_total_log %>% 
+  ggplot(aes(x = PCoA1.x, y = PCoA2.x, colour = Rootworm)) +
+  geom_point(alpha = 0.5) +
+  geom_segment(aes(x = PCoA1.y, y = PCoA2.y, xend = PCoA1.x, yend = PCoA2.x), alpha = 0.25) +
+  stat_ellipse() +
+  scale_color_manual(values = c("#AD343E", "#1D3354")) + 
+  theme_classic() +
+  xlab("Axis 1 [8.8]") + ylab("Axis 2 [4.9%]") 
+
+total_log_pcoa_fig1
+```
+
+## Alpha diversity
+We also are curious how host identity can effect alpha diversity metrics (kinda interested). Let's examine those.
+
+```{r}
+wf2_diversity <- estimate_richness(wf2, measures = 
+                                      c("Observed", 
+                                        "Chao1", 
+                                        "Shannon", 
+                                        "InvSimpson"))
+
+wf2_diversity_full <- cbind(wf2_diversity, sample_wf2_rare)
+
+
+str(wf2_diversity_full)
+
+wf2.sum.chao <- wf2_diversity_full %>% 
+  dplyr::group_by(Rootworm) %>% 
+  dplyr::summarise(mean_chao = mean(Chao1),
+                   sd = std.error(Chao1))
+
+ggqqplot(wf2_diversity_full, x = 'Chao1')
+shapiro.test(wf2_diversity_full$Chao1)
+
+t.test(Chao1 ~ Rootworm, data = wf2_diversity_full, var.equal = FALSE)
+
+
+ggplot(wf2_diversity_full)+
+  geom_histogram(aes(x = Chao1), binwidth = 1)
+
+wf2chao <- wf2_diversity_full %>% 
+  dplyr::select(Rootworm, Chao1) %>% 
+  mutate(sqrt_chao = Chao1^(1/2)) %>% 
+  mutate(sq_chao = Chao1^2) %>% 
+  mutate(log_chao = log(1 + Chao1))
+
+t.test(sqrt_chao ~ Rootworm, data = wf2chao)
+ggqqplot(wf2chao, x = 'sqrt_chao')
+
+t.test(log_chao ~ Rootworm, data = wf2chao)
+ggqqplot(wf2chao, x = 'log_chao')
+
+
+chao_plot <- ggplot(wf2chao, aes(x=Rootworm, y = log_chao)) +
+  geom_violin() + geom_boxplot(width=0.1) +
+  geom_jitter(aes(colour = Rootworm), position = position_jitter(0.2), alpha = .5) +
+  scale_color_manual(values = c("#AD343E", "#1D3354"))
+
+chao_plot
+ggsave("", dpi = 300)
+
+
+## Inverse Simpson 
+wf2.sum.simp <- wf2_diversity_full %>% 
+  dplyr::group_by(Rootworm) %>% 
+  dplyr::summarise(mean_simp = mean(InvSimpson),
+                   sd = std.error(InvSimpson))
+
+# Normality assumption check
+ggqqplot(wf2_diversity_full, x = 'InvSimpson')
+shapiro.test(wf2_diversity_full$InvSimpson)
+
+#untransformed data
+t.test(InvSimpson ~ Rootworm, data = wf2_diversity_full, var.equal = FALSE)
+
+# transformation
+wf2simp <- wf2_diversity_full %>% 
+  dplyr::select(Rootworm, InvSimpson) %>% 
+  mutate(sqrt_simp = InvSimpson^(1/2)) %>% 
+  mutate(sq_simp = InvSimpson^2) %>% 
+  mutate(log_Simp = log(1 + InvSimpson))
+
+# Transformed data analysis
+t.test(sqrt_simp ~ Rootworm, data = wf2simp)
+ggqqplot(wf2simp, x = 'sqrt_simp')
+
+t.test(log_Simp ~ Rootworm, data = wf2simp)
+ggqqplot(wf2simp, x = 'log_Simp')
+
+
+ggplot(wf2simp) +
+  geom_violin(aes(x=Rootworm, y = log_Simp))
+
+```
+
+## Higher level taxonomic assignment
+```{r}
+# Genus level
+genus_level <- tax_glom(wf2, taxrank = 'Genus')
+
+genus_bray <- phyloseq::distance(genus_level, method = "bray")
+genus_jaccard <- phyloseq::distance(genus_level, method = "jaccard")
+sample_genus_rare <- data.frame(sample_data(genus_level))
+
+set.seed(2)
+adonis(genus_bray ~ Rootworm, data = sample_genus_rare)
+permutest(betadisper(genus_bray, sample_genus_rare$Rootworm))
+set.seed(2)
+adonis(genus_jaccard ~ Rootworm, data = sample_genus_rare)
+permutest(betadisper(genus_jaccard, sample_genus_rare$Rootworm))
+
+# Family level
+fam_level <- tax_glom(wf2, taxrank = 'Family')
+
+fam_bray <- phyloseq::distance(fam_level, method = "bray")
+fam_jaccard <- phyloseq::distance(fam_level, method = "jaccard")
+sample_fam_rare <- data.frame(sample_data(fam_level))
+
+set.seed(2)
+adonis(fam_bray ~ Rootworm, data = sample_fam_rare)
+permutest(betadisper(fam_bray, sample_fam_rare$Rootworm))
+set.seed(2)
+adonis(fam_jaccard ~ Rootworm, data = sample_fam_rare)
+permutest(betadisper(fam_jaccard, sample_fam_rare$Rootworm))
+
+# Order level
+order_level <- tax_glom(wf2, taxrank = 'Order')
+
+order_bray <- phyloseq::distance(order_level, method = "bray")
+order_jaccard <- phyloseq::distance(order_level, method = "jaccard")
+sample_order_rare <- data.frame(sample_data(order_level))
+
+set.seed(2)
+adonis(order_bray ~ Rootworm, data = sample_order_rare)
+permutest(betadisper(order_bray, sample_order_rare$Rootworm))
+set.seed(2)
+adonis(order_jaccard ~ Rootworm, data = sample_order_rare)
+permutest(betadisper(order_jaccard, sample_order_rare$Rootworm))
+
+# Class level
+class_level <- tax_glom(wf2, taxrank = 'Class')
+
+class_bray <- phyloseq::distance(class_level, method = "bray")
+lab_class_jaccard <- phyloseq::distance(class_level, method = "jaccard")
+sample_class_rare <- data.frame(sample_data(class_level))
+
+set.seed(2)
+adonis(class_bray ~ Rootworm, data = sample_class_rare)
+permutest(betadisper(class_bray, sample_class_rare$Rootworm))
+set.seed(2)
+adonis(class_jaccard ~ Rootworm, data = sample_class_rare)
+permutest(betadisper(class_jaccard, sample_class_rare$Rootworm))
+
+# Phylum
+
+phylum_level <- tax_glom(wf2, taxrank = 'Phylum')
+
+phylum_bray <- phyloseq::distance(phylum_level, method = "bray")
+phylum_jaccard <- phyloseq::distance(phylum_level, method = "jaccard")
+sample_phylum_rare <- data.frame(sample_data(phylum_level))
+
+set.seed(2)
+adonis(phylum_bray ~ Rootworm, data = sample_phylum_rare)
+permutest(betadisper(phylum_bray, sample_phylum_rare$Rootworm))
+set.seed(2)
+adonis(phylum_jaccard ~ Rootworm, data = sample_phylum_rare)
+permutest(betadisper(phylum_jaccard, sample_phylum_rare$Rootworm))
+
+pcoa_plotter(dist_matrix = phylum_bray, 
+             samp_dat = sample_phylum_rare,
+             cent_variable = sample_phylum_rare$Rootworm,
+             join_cent = "Rootworm")
+
+
+```
+At higher levels of taxonomic assignment, the differences between host identity go away.
+
+
+## Prevalence tables
+
+```{r}
+# total
+prev_tables(wf2)
+
+prevelance_table_wf2 = apply(X = otu_table(wf2),
+                          MARGIN = 1,
+                          FUN = function(x){sum(x > 0)})
+
+prevelance_table_wf2 = data.frame(Prevalence = prevelance_table_wf2,
+                               TotalAbundance = taxa_sums(wf2),
+                               tax_table(wf2))
+view(prevelance_table_wf2)
+
+
+
+wcr <- subset_samples(wf2, Rootworm == "WCR")
+sum(taxa_sums(wcr) == 0)
+wcr <- prune_taxa(taxa_sums(wcr) > 0, wcr)
+
+ncr <- subset_samples(wf2, Rootworm == "NCR")
+sum(taxa_sums(ncr) == 0)
+ncr <- prune_taxa(taxa_sums(ncr) > 0, ncr)
+
+# WCR
+prev_tables(wcr)
+
+# NCR
+prev_tables(ncr)
+```
+
+## Common core bacteria
+
+Let's look specifically at the common ASV in WCR and NCR in the wild
+```{r}
+ncr
+wcr
+
+# Convert samples to relative abundance
+wcr_ra <- microbiome::transform(wcr, "compositional")
+
+# Check for ASV appearing in 50% samples
+core.taxa.standard <- core_members(wcr_ra, detection = 0, prevalence = 49.99/100)
+print(core.taxa.standard)
+
+# Add taxonomy
+taxonomy <- as.data.frame(tax_table(wcr_ra))
+
+# Subset this taxonomy table to include only core OTUs  
+core_taxa_id <- subset(taxonomy, rownames(taxonomy) %in% core.taxa.standard)
+write_csv(core_taxa_id, "")
+
+DT::datatable(core_taxa_id)
+
+# Convert samples to relative abundance
+ncr_ra <- microbiome::transform(ncr, "compositional")
+
+# Check for ASV appearing in 50% samples
+core.taxa.standard <- core_members(ncr_ra, detection = 0, prevalence = 49.99/100)
+print(core.taxa.standard)
+
+# Add taxonomy
+taxonomy <- as.data.frame(tax_table(ncr_ra))
+
+# Subset this taxonomy table to include only core OTUs  
+core_taxa_id2 <- subset(taxonomy, rownames(taxonomy) %in% core.taxa.standard)
+write_csv(core_taxa_id2, "")
+
+DT::datatable(core_taxa_id2)
+
+# Compare that to the most abundant taxa
+prevelance_table_wcr = apply(X = otu_table(wcr),    # Take the otu_table and add up all the rows that have
+                            MARGIN = 1,                       # a number greater than zero
+                            FUN = function(x){sum(x > 0)})
+
+
+
+
+prevelance_table_wcr = data.frame(Prevalence = prevelance_table_wcr,        # Make a data.frame with the prevalence data from above
+                                 TotalAbundance = taxa_sums(wcr),    # with the total number of reads for each taxa and 
+                                 tax_table(wcr))                     # add taxonomy data
+
+
+
+
+prevelance_table_wcr_sort <- prevelance_table_wcr %>% arrange(Prevalence)
+view(prevelance_table_wcr_sort)
+
+# amount of sequences the core accounts for
+
+core_taxa_id #WCR
+wcr_asv2 <- data.frame(otu_table(wcr))
+wcr_asv2 <- rownames_to_column(wcr_asv2, var = "OTU")
+wcr_core_reads <- core_taxa_id %>% 
+  left_join(wcr_asv2, by = "OTU")
+total_counts_wcr <- colSums(wcr_core_reads[,c(-1,-2,-3,-4,-5,-6,-7,-8)])
+tc_wcr <- as.data.frame(total_counts_wcr)
+
+wcr_core_counts <- tc_wcr %>% 
+  summarise(average_read = mean(total_counts_wcr),
+            std = std.error(total_counts_wcr))
+
+
+
+core_taxa_id2 #NCR
+ncr_asv2 <- data.frame(otu_table(ncr))
+ncr_asv2 <- rownames_to_column(ncr_asv2, var = "OTU")
+ncr_core_reads <- core_taxa_id2 %>% 
+  left_join(ncr_asv2, by = "OTU")
+total_counts_ncr <- colSums(ncr_core_reads[,c(-1,-2,-3,-4,-5,-6,-7,-8)])
+tc_ncr <- as.data.frame(total_counts_ncr)
+
+ncr_core_counts <- ncr_core_reads %>% 
+  summarise(average_read = mean(total_counts_ncr),
+            std = std.error(total_counts_ncr))
+
+
+```
+
+We also want to know what proportion of ASV's are shared between host species.
+
+```{r}
+wf2
+wcr
+ncr
+
+wcr_asv <- data.frame(otu_table(wcr))
+wcr_asv <- rownames_to_column(wcr_asv, var = "asv.id")
+
+ncr_asv <- data.frame(otu_table(ncr))
+ncr_asv <- rownames_to_column(ncr_asv, var = "asv.id")
+
+total_asv <- inner_join(wcr_asv, ncr_asv, by = "asv.id")
+
+percent_overlap <- 230/1842 #12.5%
+
+total_counts <- colSums(total_asv[,-1])
+tc <- as.data.frame(total_counts)
+
+sample_wf2_edit <- sample_wf2_rare %>%
+  rownames_to_column(var = "id") %>% 
+  separate(col = "id", into = c('samp', 'run'), sep = '-')
+
+tc_root <- tc %>% 
+  rownames_to_column(var = 'id') %>% 
+  separate(col = "id", into = c('samp', 'run'), sep = '\\.') %>% 
+  left_join(sample_wf2_edit, by = "samp")
+  
+
+tots_co <- tc_root %>% 
+  group_by(Rootworm) %>% 
+  summarise(average_read = mean(total_counts),
+            std = std.error(total_counts))
+
+shapiro.test(tc_root$total_counts)
+
+
+### Join the 230 ASV to taxonomy data
+total_tax_table <- data.frame(tax_table(wf2))
+total_tax_table <- rownames_to_column(total_tax_table, var = 'asv.id')
+
+total_asv_tax <- total_asv %>% 
+  left_join(total_tax_table, by = 'asv.id')
+
+total_asv_supp <- total_asv_tax %>% 
+  select(asv.id, Kingdom, Phylum, Class, Order, Genus, Species)
+
+write.csv(total_asv_supp, "")
+
+
+# Venn diagram
+rownames(data.frame(otu_table(wcr)))
+rownames(data.frame(otu_table(ncr)))
+
+x <- list(
+  'WCR' = rownames(data.frame(otu_table(wcr))), 
+  'NCR ' = rownames(data.frame(otu_table(ncr))))
+
+venp1 <- ggvenn(
+  x, 
+  fill_color = c("#1D3354", "#AD343E"),
+  stroke_size = 0.3, set_name_size = 5, show_percentage = FALSE
+  )
+
+venp1
+
+ggsave("", dpi = 300)
+  
+```
+
+
+## Bar plot
+
+```{r}
+sample_wf2_rare <- data.frame(sample_data(wf2))
+# phylum level
+
+glom <- tax_glom(wf2, taxrank = 'Phylum')
+glom # should list # taxa as # phyla
+data_glom<- psmelt(glom) # create dataframe from phyloseq object
+data_glom$phylum <- as.character(data_glom$Phylum) #convert to character
+data_glom$Rootworm2 <- factor(data_glom$Rootworm, levels = c("WCR","NCR"))
+
+
+#simple way to rename phyla with < 1% abundance
+data_glom$phylum[data_glom$Abundance < 0.01] <- "< 1% abund."
+
+#Count # phyla to set color palette
+Count = length(unique(data_glom$phylum))
+Count
+unique(data_glom$phylum)
+
+phylum_plot <- ggplot(data=data_glom, aes(x=Name, y=Abundance/750, fill=phylum)) +
+   facet_grid(~Rootworm2, scales = "free")
+
+pp.fig <- phylum_plot + geom_bar(aes(), stat="identity", position="stack", width = 1) +
+  scale_y_continuous(expand = c(0,0), limits = c(0, 1), breaks = seq(0, 1, 0.25)) +
+  scale_fill_manual(values = c("#ef946c", "#ffead0", "#96616b","#37505c", "#113537", 
+                               "#283044",  "#63474d", "#78a1bb", "#4a4238","#4d5359", 
+                               "#508484", "#454372","#502419", "#70877F", "#2F2963",
+                               "#C4A77D","#7EA172", "#C7CB85", "#BFCBC2", "#3B3561",
+                               "#dad7cd", "#a3b18a", "#588157", "#63474d", "#aa767c",
+                               "#ebf5ee", "#335c67")) +
+  labs(fill = "Phylum") + xlab("Individual sample") + ylab("Average Relative Abundance") +
+  theme(axis.text.x = element_blank(),
+        axis.ticks.x = element_blank(),
+        axis.title.x = element_text(size = 14, vjust = -2),
+        axis.title.y = element_text(size = 14, vjust = 2),
+        plot.margin = margin(12,12,12,12),
+        legend.text = element_text(size = 12),
+        legend.title = element_text(size = 15), 
+        strip.text.x = element_text(size = 15))
+       
+
+pp.fig
+
+ggsave("", dpi = 300, width = 7.4, height = 6)
+```
+
+
+
+## Differential abundance between species
+
+Now that we see there are differences in the communities across host species, let's see if we can identity taxa that have different abundance. We'll use the lab based samples as we know they are grown on the same diets. We can try different levels of taxonomic resolution as well.
+
+```{r}
+wf2
+
+ds_wf2 = phyloseq_to_deseq2(wf2, ~Rootworm)
+
+gm_mean = function(x, na.rm=TRUE){
+  exp(sum(log(x[x > 0]), na.rm=na.rm) / length(x))
+}
+geoMeans = apply(counts(ds_wf2), 1, gm_mean)
+ds_wf2 = estimateSizeFactors(ds_wf2, geoMeans = geoMeans)
+ds_wf2 = DESeq2::DESeq(ds_wf2, fitType="local")
+
+#results viewer for p=0.05
+res = DESeq2::results(ds_wf2)
+res = res[order(res$padj, na.last=NA), ]
+alpha = 0.05
+sigtab = res[(res$padj < alpha), ]
+sigtab = cbind(as(sigtab, "data.frame"), as(tax_table(wf2)[rownames(sigtab), ], "matrix"))
+head(sigtab)
+wf2_sigtab <- sigtab
+
+posigtab = sigtab[sigtab[, "log2FoldChange"] > 0, ]
+posigtab = posigtab[, c("baseMean", "log2FoldChange", "lfcSE", "padj", "Phylum", "Class", "Family", "Genus")]
+
+# bar plot of significantly different taxa
+theme_set(theme_bw())
+sigtabgen = subset(sigtab, !is.na(Genus))
+# Phylum order
+x = tapply(sigtabgen$log2FoldChange, sigtabgen$Phylum, function(x) max(x))
+x = sort(x, TRUE)
+sigtabgen$Phylum = factor(as.character(sigtabgen$Phylum), levels=names(x))
+# Genus order
+x = tapply(sigtabgen$log2FoldChange, sigtabgen$Genus, function(x) max(x))
+x = sort(x, TRUE)
+sigtabgen$Genus = factor(as.character(sigtabgen$Genus), levels=names(x))
+wf2_wvn <- ggplot(sigtabgen, aes(y=Genus, x=log2FoldChange, color=Family)) + 
+  geom_vline(xintercept = 0.0, color = "gray", size = 0.5) +
+  geom_point(size=6) + 
+  theme(axis.text.x = element_text(angle = -90, hjust = 0, vjust=0.5)) +
+#        plot.margin = margin(5,5,5,5)) +
+  scale_color_manual(values = c("#78a1bb", "#a3b18a",  "#37505c", "#113537","#96616b", 
+                               "#283044",  "#63474d", "#ffead0", "#4a4238", "#C7CB85",
+                               "#508484", "#454372","#502419", "#70877F", "#2F2963",
+                               "#C4A77D","#4d5359","#7EA172",  "#BFCBC2", "#3B3561",
+                               "#63474d", "#ef946c"))
+  
+wf2_wvn
+
+
+##NO RESULTS
+
+```
+
+We see that there are several differentially abundant ASV between NCR and WCR. However, this is using rarefied data and I'm not sure if that's the correct thing to do with DeSEQ. I will instead try to filter out the samples that are rarefied out, then use the remaining samples with unrarefied data.
+
+```{r}
+
+ds_bdw_full = phyloseq_to_deseq2(bdw, ~Rootworm)
+
+gm_mean = function(x, na.rm=TRUE){
+  exp(sum(log(x[x > 0]), na.rm=na.rm) / length(x))
+}
+geoMeans = apply(counts(ds_bdw_full), 1, gm_mean)
+ds_bdw_full = estimateSizeFactors(ds_bdw_full, geoMeans = geoMeans)
+ds_bdw_full = DESeq2::DESeq(ds_bdw_full, fitType="local")
+
+#results viewer for p=0.05
+res = DESeq2::results(ds_bdw_full)
+res = res[order(res$padj, na.last=NA), ]
+alpha = 0.05
+sigtab = res[(res$padj < alpha), ]
+sigtab = cbind(as(sigtab, "data.frame"), as(tax_table(bdw)[rownames(sigtab), ], "matrix"))
+head(sigtab)
+bdw_full_sigtab <- sigtab
+
+posigtab = sigtab[sigtab[, "log2FoldChange"] > 0, ]
+posigtab = posigtab[, c("baseMean", "log2FoldChange", "lfcSE", "padj", "Phylum", "Class", "Family", "Genus")]
+
+# bar plot of significantly different taxa
+theme_set(theme_bw())
+sigtabgen = subset(sigtab, !is.na(Genus))
+# Phylum order
+x = tapply(sigtabgen$log2FoldChange, sigtabgen$Phylum, function(x) max(x))
+x = sort(x, TRUE)
+sigtabgen$Phylum = factor(as.character(sigtabgen$Phylum), levels=names(x))
+# Genus order
+x = tapply(sigtabgen$log2FoldChange, sigtabgen$Genus, function(x) max(x))
+x = sort(x, TRUE)
+sigtabgen$Genus = factor(as.character(sigtabgen$Genus), levels=names(x))
+bdw_full_gen_wvn <- ggplot(sigtabgen, aes(y=Genus, x=log2FoldChange, color=Class)) + 
+  geom_vline(xintercept = 0.0, color = "gray", size = 0.5) +
+  geom_point(size=6) + 
+  theme(axis.text.x = element_text(angle = -90, hjust = 0, vjust=0.5)) +
+#        plot.margin = margin(5,5,5,5)) +
+  scale_color_manual(values = c("#78a1bb", "#a3b18a",  "#37505c", "#113537","#96616b", 
+                               "#283044",  "#63474d", "#ffead0", "#4a4238", "#C7CB85",
+                               "#508484", "#454372","#502419", "#70877F", "#2F2963",
+                               "#C4A77D","#4d5359","#7EA172",  "#BFCBC2", "#3B3561",
+                               "#63474d", "#ef946c"))
+  
+bdw_full_gen_wvn
+
+ggsave("", dpi = 300)
+
+```
+
+A lot more significantlly different taxa. Interestingly it looks like some differences may be two different ASV in the same genus. Maybe this is some type of functional redundancy. What does it look like at the genus level?
+
+```{r}
+lab_genus <- tax_glom(lab_full, taxrank = 'Genus')
+
+ds_lab_genus = phyloseq_to_deseq2(lab_genus, ~Rootworm)
+
+gm_mean = function(x, na.rm=TRUE){
+  exp(sum(log(x[x > 0]), na.rm=na.rm) / length(x))
+}
+geoMeans = apply(counts(ds_lab_genus), 1, gm_mean)
+ds_lab_genus = estimateSizeFactors(ds_lab_genus, geoMeans = geoMeans)
+ds_lab_genus = DESeq2::DESeq(ds_lab_genus, fitType="local")
+
+#results viewer for p=0.05
+res = DESeq2::results(ds_lab_genus)
+res = res[order(res$padj, na.last=NA), ]
+alpha = 0.05
+sigtab = res[(res$padj < alpha), ]
+sigtab = cbind(as(sigtab, "data.frame"), as(tax_table(lab_genus)[rownames(sigtab), ], "matrix"))
+head(sigtab)
+lab_genus_sigtab <- sigtab
+
+posigtab = sigtab[sigtab[, "log2FoldChange"] > 0, ]
+posigtab = posigtab[, c("baseMean", "log2FoldChange", "lfcSE", "padj", "Phylum", "Class", "Family", "Genus")]
+
+# bar plot of significantly different taxa
+theme_set(theme_bw())
+sigtabgen = subset(sigtab, !is.na(Genus))
+# Phylum order
+x = tapply(sigtabgen$log2FoldChange, sigtabgen$Phylum, function(x) max(x))
+x = sort(x, TRUE)
+sigtabgen$Phylum = factor(as.character(sigtabgen$Phylum), levels=names(x))
+# Genus order
+x = tapply(sigtabgen$log2FoldChange, sigtabgen$Genus, function(x) max(x))
+x = sort(x, TRUE)
+sigtabgen$Genus = factor(as.character(sigtabgen$Genus), levels=names(x))
+lab_genus_wvn <- ggplot(sigtabgen, aes(y=Genus, x=log2FoldChange, color=Class)) + 
+  geom_vline(xintercept = 0.0, color = "gray", size = 0.5) +
+  geom_point(size=6) + 
+  theme(axis.text.x = element_text(angle = -90, hjust = 0, vjust=0.5)) +
+#        plot.margin = margin(5,5,5,5)) +
+  scale_color_manual(values = c("#78a1bb", "#a3b18a",  "#37505c", "#113537","#96616b", 
+                               "#283044",  "#63474d", "#ffead0", "#4a4238", "#C7CB85",
+                               "#508484", "#454372","#502419", "#70877F", "#2F2963",
+                               "#C4A77D","#4d5359","#7EA172",  "#BFCBC2", "#3B3561",
+                               "#63474d", "#ef946c"))
+  
+lab_genus_wvn
+
+#Rarefied
+
+lab_genus <- tax_glom(lab, taxrank = 'Genus')
+
+ds_lab_genus = phyloseq_to_deseq2(lab_genus, ~Rootworm)
+
+gm_mean = function(x, na.rm=TRUE){
+  exp(sum(log(x[x > 0]), na.rm=na.rm) / length(x))
+}
+geoMeans = apply(counts(ds_lab_genus), 1, gm_mean)
+ds_lab_genus = estimateSizeFactors(ds_lab_genus, geoMeans = geoMeans)
+ds_lab_genus = DESeq2::DESeq(ds_lab_genus, fitType="local")
+
+#results viewer for p=0.05
+res = DESeq2::results(ds_lab_genus)
+res = res[order(res$padj, na.last=NA), ]
+alpha = 0.05
+sigtab = res[(res$padj < alpha), ]
+sigtab = cbind(as(sigtab, "data.frame"), as(tax_table(lab_genus)[rownames(sigtab), ], "matrix"))
+head(sigtab)
+lab_genus_sigtab <- sigtab
+
+posigtab = sigtab[sigtab[, "log2FoldChange"] > 0, ]
+posigtab = posigtab[, c("baseMean", "log2FoldChange", "lfcSE", "padj", "Phylum", "Class", "Family", "Genus")]
+
+# bar plot of significantly different taxa
+theme_set(theme_bw())
+sigtabgen = subset(sigtab, !is.na(Genus))
+# Phylum order
+x = tapply(sigtabgen$log2FoldChange, sigtabgen$Phylum, function(x) max(x))
+x = sort(x, TRUE)
+sigtabgen$Phylum = factor(as.character(sigtabgen$Phylum), levels=names(x))
+# Genus order
+x = tapply(sigtabgen$log2FoldChange, sigtabgen$Genus, function(x) max(x))
+x = sort(x, TRUE)
+sigtabgen$Genus = factor(as.character(sigtabgen$Genus), levels=names(x))
+lab_genus_wvn_rare <- ggplot(sigtabgen, aes(y=Genus, x=log2FoldChange, color=Class)) + 
+  geom_vline(xintercept = 0.0, color = "gray", size = 0.5) +
+  geom_point(size=6) + 
+  theme(axis.text.x = element_text(angle = -90, hjust = 0, vjust=0.5)) +
+#        plot.margin = margin(5,5,5,5)) +
+  scale_color_manual(values = c("#78a1bb", "#a3b18a",  "#37505c", "#113537","#96616b", 
+                               "#283044",  "#63474d", "#ffead0", "#4a4238", "#C7CB85",
+                               "#508484", "#454372","#502419", "#70877F", "#2F2963",
+                               "#C4A77D","#4d5359","#7EA172",  "#BFCBC2", "#3B3561",
+                               "#63474d", "#ef946c"))
+  
+lab_genus_wvn_rare
+```
+
+
+
+
