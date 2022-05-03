@@ -1,0 +1,480 @@
+---
+title: "Environmental effects"
+author: "Kyle Padoock"
+date: "05/03/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+source('210304_microbe_functions.R')
+```
+
+The second question we asked was "How does the environment shape the composition of the microbiome within species?" This code is aimed to address that question.
+
+```{r}
+#setwd()
+bd <- read_csv2phyloseq(
+  #ASV file with counts of reads per ASV by samples
+  otu.file = , 
+  #Accompanying taxonomy for ASV sequences
+  taxonomy.file = ,
+  #Metadata table for samples in data set
+  metadata.file = 
+)
+
+# Now that it's in a useable format, we can filter out the chloroplast, mitochondria, archaea and unclassified phyla. This was done prior to the data tables being made but it doesn't hurt to do it again to double check.
+bd2 <- nonbact_filter(bd)
+
+sample_data(bd2)$is.neg <- sample_data(bd2)$County == "Blank"
+contamdf.prev <- isContaminant(bd2, method="prevalence", neg="is.neg")
+table(contamdf.prev$contaminant)
+
+prev_filt <- contamdf.prev %>% 
+  filter(contaminant == TRUE) %>% 
+  rownames_to_column(var = "sample_id") %>% 
+  select(sample_id) %>% 
+  dplyr::pull(sample_id)
+
+# we won't be including wolbachia in these analyses
+bdw <- subset_taxa(bd2, (Family != "Anaplasmataceae") | is.na(Family))
+
+wf2 <- rarefy_even_depth(bdw, sample.size = 750, rngseed = 2) # lost 33 samples
+```
+
+We will separate the data by host species. Then we can see how the environment effects microbiome composition.
+
+## WCR
+
+```{r}
+
+wcr <- subset_samples(wf2, Rootworm == "WCR")
+sum(taxa_sums(wcr) == 0)
+wcr <- prune_taxa(taxa_sums(wcr) > 0, wcr)
+
+
+# Full data set
+wcr_bray <- phyloseq::distance(wcr, method = "bray")
+wcr_jaccard <- phyloseq::distance(wcr, method = "jaccard")
+sample_wcr <- data.frame(sample_data(wcr))
+sample_wcr$Year <- as.character(sample_wcr$Year)
+
+# County level total
+set.seed(2)
+adonis(wcr_bray ~  County, data = sample_wcr)
+permutest(betadisper(wcr_bray, sample_wcr$County))
+#pairwiseAdonis::pairwise.adonis2(wcr_wild_bray ~ County, data = sample_wcr)
+set.seed(2)
+adonis(wcr_jaccard ~  County, data = sample_wcr)
+permutest(betadisper(wcr_jaccard, sample_wcr$County))
+
+# State level total
+perms <- with(sample_wcr, how(nperm = 1000, blocks = Year))
+set.seed(2)
+adonis(wcr_bray ~  State + Year, data = sample_wcr)
+adonis(wcr_bray ~ State, data = sample_wcr)
+permutest(betadisper(wcr_bray, sample_wcr$State))
+pairwiseAdonis::pairwise.adonis2(wcr_bray ~ State, data = sample_wcr)
+TukeyHSD(betadisper(wcr_wild_bray, sample_wcr$State))
+boxplot(betadisper(wcr_wild_bray, sample_wcr$State))
+
+set.seed(2)
+adonis(wcr_jaccard ~  State, data = sample_wcr)
+permutest(betadisper(wcr_jaccard, sample_wcr$State))
+pairwiseAdonis::pairwise.adonis2(wcr_jaccard ~ State, data = sample_wcr)
+
+
+# Small spatial scale, county level
+colorado <- subset_samples(wcr, Year == "2016")
+sum(taxa_sums(colorado) == 0)
+colorado <- prune_taxa(taxa_sums(colorado) > 0, colorado)
+colorado <- subset_samples(colorado, State != "AZ")
+sum(taxa_sums(colorado) == 0)
+colorado <- prune_taxa(taxa_sums(colorado) > 0, colorado)
+
+colorado_bray <- phyloseq::distance(colorado, method = "bray")
+colorado_jaccard <- phyloseq::distance(colorado, method = "jaccard")
+sample_colorado <- data.frame(sample_data(colorado))
+
+set.seed(2)
+adonis(colorado_bray ~  County, data = sample_colorado)
+permutest(betadisper(colorado_bray, sample_colorado$County))
+pairwiseAdonis::pairwise.adonis2(colorado_bray ~ County, data = sample_colorado)
+set.seed(2)
+adonis(colorado_jaccard ~  County, data = sample_colorado)
+permutest(betadisper(colorado_jaccard, sample_colorado$County))
+
+```
+
+Let's also examine alpha diversity metrics.
+
+```{r}
+wf2_diversity <- estimate_richness(wf2, measures = 
+                                      c("Observed", 
+                                        "Chao1", 
+                                        "Shannon", 
+                                        "InvSimpson"))
+
+wf2_diversity_full <- cbind(wf2_diversity, sample_wf2_rare2)
+
+wcr_div <- wf2_diversity_full %>% 
+  filter(Rootworm == "WCR") %>% 
+  mutate(log_chao = log(1+Chao1)) %>% 
+  mutate(log_simp = log(1+InvSimpson))
+
+# Full chao
+aov.chao.county.mod1 <- aov(Chao1 ~ County, data = wcr_div)
+summary(aov.chao.county.mod1)
+plot(aov.chao.county.mod1, 1)
+aov.chao.county.mod2 <- aov(log_chao ~ County, data = wcr_div)
+summary(aov.chao.county.mod2)
+plot(aov.chao.county.mod2, 2)
+ggplot(wcr_div) + 
+  geom_boxplot(aes(x = County, y = log_chao))
+
+
+# Full Inverse Simpson
+aov.simp.county.mod1 <- aov(InvSimpson ~ County, data = wcr_div)
+summary(aov.simp.county.mod1)
+plot(aov.simp.county.mod1, 2)
+aov.simp.county.mod2 <- aov(log_simp ~ County, data = wcr_div)
+summary(aov.simp.county.mod2)
+plot(aov.simp.county.mod2, 2)
+ggplot(wcr_div) + 
+  geom_boxplot(aes(x = County, y = log_simp))
+
+```
+In WCR, the overall model is significant but the pairwise tests really don't explain much. We'll look at NCR. 
+
+## NCR
+
+```{r}
+
+ncr
+
+# wild based samples
+ncr_bray <- phyloseq::distance(ncr, method = "bray")
+ncr_jaccard <- phyloseq::distance(ncr, method = "jaccard")
+sample_wild <- data.frame(sample_data(ncr))
+
+set.seed(2)
+adonis(ncr_bray ~  County, data = sample_wild)
+permutest(betadisper(ncr_bray, sample_wild$County))
+pairwiseAdonis::pairwise.adonis2(ncr_bray ~ County, data = sample_wild)
+set.seed(2)
+adonis(ncr_jaccard ~  County, data = sample_wild)
+permutest(betadisper(ncr_jaccard, sample_wild$County))
+
+
+set.seed(2)
+adonis(ncr_bray ~  State, data = sample_wild)
+permutest(betadisper(ncr_bray, sample_wild$State))
+pairwiseAdonis::pairwise.adonis2(ncr_bray ~ State, data = sample_wild)
+TukeyHSD(betadisper(ncr_bray, sample_wild$State))
+boxplot(betadisper(ncr_bray, sample_wild$State))
+
+set.seed(2)
+adonis(ncr_jaccard ~  State, data = sample_wild)
+permutest(betadisper(ncr_jaccard, sample_wild$State))
+
+
+```
+
+WCR and NCR from different counties and states have significantly different microbiomes. 
+
+Let's check out the alpha diversity metrics for NCR.
+
+```{r}
+ncr_div <- wf2_diversity_full %>% 
+  filter(Rootworm == "NCR") %>% 
+  mutate(log_chao = log(1+Chao1)) %>% 
+  mutate(log_simp = log(1+InvSimpson))
+
+# Full chao
+aov.chao.county.mod1 <- aov(Chao1 ~ County, data = ncr_div)
+summary(aov.chao.county.mod1)
+plot(aov.chao.county.mod1, 1)
+aov.chao.county.mod2 <- aov(log_chao ~ County, data = ncr_div)
+summary(aov.chao.county.mod2)
+plot(aov.chao.county.mod2, 2)
+ggplot(ncr_div) + 
+  geom_boxplot(aes(x = County, y = log_chao))
+
+
+
+# Full Inverse Simpson
+aov.simp.county.mod1 <- aov(InvSimpson ~ County, data = ncr_div)
+summary(aov.simp.county.mod1)
+plot(aov.simp.county.mod1, 2)
+aov.simp.county.mod2 <- aov(log_simp ~ County, data = ncr_div)
+summary(aov.simp.county.mod2)
+plot(aov.simp.county.mod2, 2)
+ggplot(ncr_div) + 
+  geom_boxplot(aes(x = County, y = log_simp))
+
+
+```
+No differences at all in the alpha diversity metrics for NCR.
+
+
+## Full WCR data set
+The pairwise differences are hard to understand. A better way to address the effect of environment is to see if things that are similar in space are similar in microbiome composition. This could be a proxy for the environmental effects. Let's start with wild WCR and the entire data set.
+
+```{r}
+setwd("..")
+# full continental distance matrix here
+geo.dist1 <- read.table("/full_geo_dist_matrix.csv", header = TRUE, sep = ",", row.names = 1)
+
+wild.geo.dist <- as.dist(geo.dist1)
+
+# Mantel test
+mod1.mantel.wild <- vegan::mantel(wcr_bray, wild.geo.dist, method = "spearman", permutations = 9999, na.rm = TRUE)
+
+mod1.mantel.wild
+
+mod2.mantel.wild <- vegan::mantel(wcr_jaccard, wild.geo.dist, method = "spearman", permutations = 9999, na.rm = TRUE)
+
+mod2.mantel.wild
+```
+
+We don't see a significant correlation between dissimilarity and geographic distance. This could be conflated with climate data. Let's see if we can select samples along the same latitude and see what we find.
+
+
+## Colorado
+```{r}
+colorado <- subset_samples(wcr, Year == "2016")
+sum(taxa_sums(colorado) == 0)
+colorado <- prune_taxa(taxa_sums(colorado) > 0, colorado)
+
+sample_data(colorado)
+
+colorado_bray <- phyloseq::distance(colorado, method = "bray")
+colorado_jaccard <- phyloseq::distance(colorado, method = "jaccard")
+sample_colorado <- data.frame(sample_data(colorado))
+
+set.seed(2)
+adonis(colorado_bray ~  County, data = sample_colorado)
+permutest(betadisper(colorado_bray, sample_colorado$County))
+pairwiseAdonis::pairwise.adonis2(colorado_bray ~ County, data = sample_colorado)
+set.seed(2)
+adonis(colorado_jaccard ~  County, data = sample_colorado)
+permutest(betadisper(colorado_jaccard, sample_colorado$County))
+
+#colorado distance matrix here
+setwd("..")
+colorado.geo.dist <- read.table("/colorado_geo_dist_matrix.csv", header = TRUE, sep = ",", row.names = 1)
+
+col.geo.dist <- as.dist(colorado.geo.dist)
+
+
+# Mantel test
+mod1.mantel.colorado <- vegan::mantel(colorado_bray, col.geo.dist, method = "spearman", permutations = 9999, na.rm = TRUE)
+
+mod1.mantel.colorado
+
+mod2.mantel.colorado <- vegan::mantel(colorado_jaccard, col.geo.dist, method = "spearman", permutations = 9999, na.rm = TRUE)
+
+mod2.mantel.colorado
+
+```
+
+Let's visualize the results from Colorado
+
+```{r}
+# Create a vector of our geographic distance matrix
+
+vecCOgeo.col <- as.vector(colorado.geo.dist)
+
+
+# Vector of our BC distance matrix
+
+vecCOabund.col <- as.vector(colorado_bray)
+
+# join these vectors in a data frame for plotting
+
+vecCO.col <- cbind(vecCOabund.col, vecCOgeo.col)
+vecCO.col <- as.data.frame(vecCO.col)
+vecCO.col <- vecCO.col %>% 
+  mutate(vecCOgeo.col2 = vecCOgeo.col / 1000)
+
+
+
+ggplot(vecCO.col) +
+  geom_point(aes(x = vecCOgeo.col2, y = vecCOabund.col), alpha = 0.3) +
+  geom_smooth(aes(x = vecCOgeo.col2, y = vecCOabund.col), method = 'lm', colour = "black") +
+  xlab("Distance (km)") + ylab("Dissimilarity (Bray-Curtis)") +
+  stat_cor(aes(x = vecCOgeo.col2, y = vecCOabund.col, label.x = 250, label.y = 0)) +
+  stat_regline_equation(aes(x = vecCOgeo.col2, y = vecCOabund.col, label =  paste(..adj.rr.label..))) +
+  theme_classic() +
+  theme(axis.title = element_text(size = 16),
+        axis.text =  element_text(size = 12),
+        axis.title.x = element_text(vjust = -1),
+        axis.title.y = element_text(vjust = 3),
+        plot.margin = unit(c(.75,.75,.75,.75), 'cm'))
+
+ggsave("", dpi = 300)
+
+
+
+## Jaccard
+
+# Create a vector of our geographic distance matrix
+
+vecCOgeo.col <- as.vector(colorado.geo.dist)
+
+
+# Vector of our BC distance matrix
+
+vecCOabund.col <- as.vector(colorado_jaccard)
+
+# join these vectors in a data frame for plotting
+
+vecCO.col <- cbind(vecCOabund.col, vecCOgeo.col)
+vecCO.col <- as.data.frame(vecCO.col)
+vecCO.col <- vecCO.col %>% 
+  mutate(vecCOgeo.col2 = vecCOgeo.col / 1000)
+
+
+
+coljac <- ggplot(vecCO.col) +
+  geom_point(aes(x = vecCOgeo.col2, y = vecCOabund.col), alpha = 0.3) +
+  geom_smooth(aes(x = vecCOgeo.col2, y = vecCOabund.col), method = 'lm', colour = "black") +
+  xlab("Distance (km)") + ylab("Dissimilarity (Jaccard)") +
+  theme_classic() +
+  theme(axis.title = element_text(size = 16),
+        axis.text =  element_text(size = 12),
+        axis.title.x = element_text(vjust = -1),
+        axis.title.y = element_text(vjust = 3),
+        plot.margin = unit(c(.75,.75,.75,.75), 'cm'))
+
+ggsave("", dpi = 300, width = 10, height = 7)
+
+
+
+```
+
+It could be that the some type of genetic structuring is accounting for the variation across the US. What if we compare dissimilarity as measured by axis 1 of the PCoA for WCR against the distance of origin (Arizona)
+
+## Distance from origin
+```{r}
+setwd("..")
+wcr
+
+wcr_site_level <- merge_samples(x = wcr, group = "State")
+
+wcr_site_bray <- phyloseq::distance(wcr_site_level, method = "bray")
+sample_wcr_site <- data.frame(sample_data(wcr_site_level))
+
+#Save sample names for samples in data set
+otu_tab <- t(abundances(wcr_site_level))
+samps <- rownames(otu_tab)
+
+#full continental distance matrix here
+state_meta <- read_csv("") %>% 
+  dplyr::filter(State %in% samps) %>% 
+  dplyr::select(State, Long, Lat)
+
+
+# Match with distance matrix from vegdist
+state_meta <- state_meta[order(state_meta$State),]
+state_meta <- column_to_rownames(state_meta, var = 'State')
+
+# Longitude value needs to be negative
+state_meta$Long <- state_meta$Long * -1
+
+# Calulate distance based on haversine distances
+geo_dist <- distm(state_meta, fun = distHaversine)
+
+rownames(geo_dist) <- rownames(state_meta)
+colnames(geo_dist) <- rownames(state_meta)
+
+state.geo <- as.data.frame(geo_dist[1,])
+
+names(state.geo)<- "dist_m"
+state.geo <- rownames_to_column(state.geo, var = "State")
+
+
+betadis_state <- betadisper(wcr_bray, sample_wcr$State)
+plot(betadis_state)
+s1 <- scores(betadis_state)
+pc1 <- as.data.frame(s1$sites[,1])
+pc2 <- as.data.frame(s1$sites[,2])
+names(pc1) <- "PC1"
+names(pc2) <- "PC2"
+pc1 <- rownames_to_column(pc1, var = "rowname")
+pc2 <- rownames_to_column(pc2, var = "rowname")
+
+sample_meta_state <- pc1 %>% 
+  left_join(rownames_to_column(sample_wcr), by = 'rowname')
+
+sample_meta_state2 <- pc2 %>% 
+  left_join(rownames_to_column(sample_wcr), by = 'rowname')
+
+
+# Population origin
+sample_origin <- sample_meta_state %>% 
+  left_join(state.geo, by = "State")
+
+mod2_lm <- lm(dist_m ~ PC1, data = sample_origin)
+summary(mod2_lm)
+
+cor.test(sample_origin$dist_m, sample_origin$PC1, method="spearman")
+
+ggplot(sample_origin) +
+  geom_point(aes(x = dist_m/1000, y = PC1), alpha = 0.3) +
+  geom_smooth(aes(x = dist_m/1000, y = PC1), method = 'lm', colour = 'black') +
+  xlab("Distance from origin (km)") + 
+  theme_classic() +
+  theme(axis.title = element_text(size = 16),
+        axis.text =  element_text(size = 12),
+        axis.title.x = element_text(vjust = -1),
+        axis.title.y = element_text(vjust = 1),
+        plot.margin = unit(c(.75,.75,.75,.75), 'cm'))
+
+# PC2
+mod3_lm <- lm(Long ~ PC2, data = sample_meta_state2)
+summary(mod3_lm)
+
+
+## Jaccard
+betadis_state <- betadisper(wcr_jaccard, sample_wcr$State)
+plot(betadis_state)
+s1 <- scores(betadis_state)
+pc1 <- as.data.frame(s1$sites[,1])
+pc2 <- as.data.frame(s1$sites[,2])
+names(pc1) <- "PC1"
+names(pc2) <- "PC2"
+pc1 <- rownames_to_column(pc1, var = "rowname")
+pc2 <- rownames_to_column(pc2, var = "rowname")
+
+sample_meta_state <- pc1 %>% 
+  left_join(rownames_to_column(sample_wcr_wild), by = 'rowname')
+
+sample_meta_state2 <- pc2 %>% 
+  left_join(rownames_to_column(sample_wcr_wild), by = 'rowname')
+
+
+# Population origin
+sample_origin <- sample_meta_state %>% 
+  left_join(state.geo, by = "State")
+
+mod2_lm_j <- lm(dist_m ~ PC1, data = sample_origin)
+summary(mod2_lm_j)
+
+ggplot(sample_origin) +
+  geom_point(aes(x = dist_m/1000, y = PC1), alpha = 0.3) +
+  geom_smooth(aes(x = dist_m/1000, y = PC1), method = 'lm') +
+  xlab("Distance from origin (km)") +
+  theme_classic() +
+  theme(axis.title = element_text(size = 16),
+        axis.text =  element_text(size = 12),
+        axis.title.x = element_text(vjust = -1),
+        axis.title.y = element_text(vjust = 1),
+        plot.margin = unit(c(.75,.75,.75,.75), 'cm'))
+
+
+
+```
+
+
+
